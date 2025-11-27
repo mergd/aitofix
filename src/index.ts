@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 import { Runner } from "./runner.js";
-import { Analyzer } from "./analyzer.js";
+import { Analyzer, type AnalysisResult } from "./analyzer.js";
 import { getPlatform } from "./platform/index.js";
+import { config } from "./config.js";
 
 async function main() {
   const args = process.argv.slice(2);
@@ -12,7 +13,7 @@ async function main() {
 
   const command = args.join(" ");
   const runner = new Runner();
-  
+
   console.log("[aitofix] Starting original command...");
   const result = await runner.runCommand(command);
 
@@ -21,88 +22,127 @@ async function main() {
     process.exit(0);
   }
 
-  console.log(`[aitofix] Command failed with exit code ${result.exitCode}. Analyzing...`);
-  
+  console.log(
+    `[aitofix] Command failed with exit code ${result.exitCode}. Analyzing...`
+  );
+
   const analyzer = new Analyzer();
-  const analysis = await analyzer.analyze(command, result.exitCode, result.logs);
+  const analysis = await analyzer.analyze(
+    command,
+    result.exitCode,
+    result.logs
+  );
 
   console.log(`[aitofix] Analysis: ${analysis.analysis}`);
+  console.log(
+    `[aitofix] Confidence: ${analysis.confidence}% (Threshold: ${config.minConfidence}%)`
+  );
 
-  if (!analysis.is_easy_fix || analysis.changes.length === 0) {
-    console.log("[aitofix] No easy fix identified. Exiting.");
+  // Handle Low Confidence or No Fix
+  if (
+    !analysis.is_easy_fix ||
+    analysis.changes.length === 0 ||
+    analysis.confidence < config.minConfidence
+  ) {
+    const reason = !analysis.is_easy_fix
+      ? "No easy fix identified"
+      : analysis.confidence < config.minConfidence
+      ? "Confidence too low"
+      : "No changes generated";
+
+    console.log(`[aitofix] ${reason}. Skipping verification.`);
+
+    if (config.commentMode === "always" || config.enableSkipMsg) {
+      await postComment(analysis, false, reason);
+    }
     process.exit(result.exitCode);
   }
 
   console.log("[aitofix] Identified potential fix. Verifying...");
-  
+
   // Apply changes
   const backups = await runner.applyChanges(analysis.changes);
-  
+
   // Rerun
   console.log("[aitofix] Re-running command to verify fix...");
   const verifyResult = await runner.runCommand(command);
 
-  // Revert changes (we only want to verify, not leave the repo in a dirty state? 
-  // Or maybe leave it dirty so user can inspect?
-  // Plan says "Re-run... If it passes, mark as Verified Fix... If it fails, discard".
-  // If it passes, we should probably still revert because we can't commit here easily without credentials/permissions complications,
-  // and we want to suggest the fix via comment. 
-  // If we leave it dirty, the next step in CI might be confused, or if we fail the CI, the runner wipes it anyway.
-  // But let's revert to be clean.)
-  
   await runner.revertChanges(backups);
 
   if (verifyResult.exitCode === 0) {
-    console.log("[aitofix] Fix VERIFIED! The suggested changes make the build pass.");
-    
-    const platform = getPlatform();
-    if (platform) {
-      await platform.init();
-      
-      const commentBody = `
-### 🤖 AITOFIX Suggestion
-I detected a failure and found a fix that **verifies successfully**.
+    console.log(
+      "[aitofix] Fix VERIFIED! The suggested changes make the build pass."
+    );
+    if (config.commentMode !== "silent") {
+      await postComment(analysis, true);
+    }
+  } else {
+    console.log(
+      "[aitofix] Verification failed. The fix did not make the command pass."
+    );
+    if (config.commentMode === "always") {
+      await postComment(analysis, false, "Verification Failed");
+    }
+  }
 
-**Analysis:** ${analysis.analysis}
+  process.exit(result.exitCode);
+}
 
-**Suggested Changes:**
-${analysis.changes.map(c => `
+async function postComment(
+  analysis: AnalysisResult,
+  verified: boolean,
+  failureReason?: string
+) {
+  const platform = getPlatform();
+  if (!platform) {
+    console.log(
+      "[aitofix] No supported CI platform detected. Skipping comment."
+    );
+    return;
+  }
+  await platform.init();
+
+  const icon = verified ? "✅" : "⚠️";
+  const title = verified ? "Fix Verified" : "Analysis Only";
+
+  let body = `### ${icon} AITOFIX Suggestion: ${title}\n\n`;
+  body += `**Analysis:** ${analysis.analysis}\n\n`;
+  body += `**Confidence:** ${analysis.confidence}%\n\n`;
+
+  if (failureReason) {
+    body += `> **Note:** Automatic verification was not completed: ${failureReason}\n\n`;
+  } else if (verified) {
+    body += `> **Success:** I verified this fix by re-running the command locally, and it passed!\n\n`;
+  }
+
+  if (analysis.changes.length > 0) {
+    body += `**Suggested Changes:**\n`;
+    body += analysis.changes
+      .map(
+        (c) => `
 **${c.file_path}**:
 \`\`\`${detectLanguage(c.file_path)}
 ${c.content}
 \`\`\`
-`).join("\n")}
-
-*(I verified this by applying the changes and re-running the command, and it passed.)*
-`;
-      await platform.postComment(commentBody);
-    } else {
-      console.log("[aitofix] No supported CI platform detected (GitHub/GitLab). Skipping comment.");
-      console.log("SUGGESTED FIX:");
-      console.log(JSON.stringify(analysis.changes, null, 2));
-    }
-  } else {
-    console.log("[aitofix] Verification failed. The fix did not make the command pass.");
-    // Optionally post about the failed attempt? No, simpler to stay silent if it didn't work.
+`
+      )
+      .join("\n");
   }
 
-  // Always exit with original error so CI fails (unless we want to 'fix' the pipeline execution, but that's risky)
-  process.exit(result.exitCode);
+  await platform.postComment(body);
 }
 
 function detectLanguage(path: string): string {
-    if (path.endsWith(".ts")) return "typescript";
-    if (path.endsWith(".js")) return "javascript";
-    if (path.endsWith(".json")) return "json";
-    if (path.endsWith(".py")) return "python";
-    if (path.endsWith(".go")) return "go";
-    if (path.endsWith(".rs")) return "rust";
-    return "";
+  if (path.endsWith(".ts")) return "typescript";
+  if (path.endsWith(".js")) return "javascript";
+  if (path.endsWith(".json")) return "json";
+  if (path.endsWith(".py")) return "python";
+  if (path.endsWith(".go")) return "go";
+  if (path.endsWith(".rs")) return "rust";
+  return "";
 }
 
-main().catch(err => {
+main().catch((err) => {
   console.error("[aitofix] Unexpected error:", err);
   process.exit(1);
 });
-
-
