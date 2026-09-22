@@ -10,7 +10,7 @@ const envSchema = z.object({
 
   GITHUB_TOKEN: z.string().optional(),
   GITLAB_TOKEN: z.string().optional(),
-  AITOFIX_MODEL: z.string().default("gpt-5.1-codex"),
+  AITOFIX_MODEL: z.string().default("gpt-6-sol"),
   AITOFIX_MIN_CONFIDENCE: z.coerce.number().min(0).max(100).default(80),
   AITOFIX_COMMENT_MODE: z
     .enum(["verified_only", "always", "silent"])

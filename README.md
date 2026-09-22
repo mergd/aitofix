@@ -38,7 +38,7 @@ The simplest way to use `aitofix` is to provide your own OpenAI API Key. This gi
 | `OPENAI_API_KEY`          | **Required**. Your OpenAI API Key.                           | -               |
 | `GITHUB_TOKEN`            | **Required** for GitHub. Auto-set by GitHub Actions.         | -               |
 | `GITLAB_TOKEN`            | **Required** for GitLab. Use a Project Access Token.         | -               |
-| `AITOFIX_MODEL`           | The OpenAI model to use.                                     | `gpt-5.1-codex` |
+| `AITOFIX_MODEL`           | The OpenAI model to use.                                     | `gpt-6-sol` |
 | `AITOFIX_MIN_CONFIDENCE`  | Minimum confidence (0-100) to attempt a fix.                 | `80`            |
 | `AITOFIX_COMMENT_MODE`    | `verified_only`, `always`, or `silent`.                      | `verified_only` |
 | `AITOFIX_ENABLE_SKIP_MSG` | Set to `true` to post a comment even when fixing is skipped. | `false`         |
